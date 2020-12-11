@@ -34,7 +34,127 @@ The data can be dumped to a CSV file, and we have two ways of proceeding:
 
 In a time-sensitive competition environment, the first step would probably be the smarter choice.
 
+## Building the token
 
+It turns out that the hardware solution is actually much faster, and simpler, to implement. Those are words I'd never thought I'd actually say, but it's true. The setup only requires a 16x2 LCD and a PCF8574T, which are *very* common (they are also, conveniently, often sold together), and a microcontroller (eg. Arduino). Using the hardware to effectively convert I2C signals into display characters not only saves us the trouble of poring over the HD44780 datasheet and painstaking effort of writing a script to decode the instructions *correctly* while keeping track of the LCD's state, but it also means we end up with an actual, physical, RSA token we can show to our friends, if we had any. I don't know about you, but I like to [*touch* my CTF solutions](https://www.youtube.com/watch?v=5TFDG-y-EHs), so this was the method we used.
+
+#### The Setup
+
+The goal here is to convert the I2C signals that we are given, and produce human-readable characters on the LCD display. 
+
+To accomplish this, we first decode the raw logic signals using our logic analyzer, which gives us a sequence of I2C write commands stored on our computer. We then feed the commands over USB to an Arduino, which then performs the actual writes to the I2C connection with the IO expander. The rest is handled by the hardware.
+
+This setup has the advantage of making use of publicly available, easy-to-use libraries to do most of our work, which dramatically cuts down the time required.
+
+#### Computer to Arduino
+
+The raw output of our logic analyzer (Saleae Logic Analyzer v1) looks like this:
+
+```
+Time [s],Packet ID,Address,Data,Read/Write,ACK/NAK
+1.396227940000000,1,N,'0',Write,ACK
+1.496450310000000,2,N,4,Write,ACK
+1.496679830000000,3,N,0,Write,ACK
+1.501438270000000,4,N,4,Write,ACK
+1.501667660000000,5,N,0,Write,ACK
+...
+```
+
+Here, we only need the "Data" column - the timing is not important for writing to the LCD; all the commands are writes to the same address; and ACK/NAK is an acknowledge signal to be written by the IO expander, not the Arduino. However, there is a small complication: for some inexplicable reason, analyzer formats the "Data" column in the most inconvenient way possible, so we have to process it. Here `'0'` refers to 0x00 byte, while `0` refers to the ASCII character 0 (0x30). The script used is shown below: (for the rest of the code see `arduino-i2c/utility.py`)
+
+```python
+def convertStr(string):
+    # Where the magic happens - this is called on each line of the input text file
+    # Converts poorly formatted string into nice integers so that we can feed it to arduino
+    if(string=="' '"): # WHY
+        return 32
+    elif(string=="COMMA"): # IS
+        return 44
+    elif(string[0]=="'"): # FORMATTING
+        return int(string.strip(string[0]))
+    elif(string=="\\r"): # SO 
+        return 13
+    elif(string=="\\t"): # BAD
+        return 9
+    else:
+        return ord(string)
+
+# Loading analyzer output
+dir=os.getcwd()
+path=os.path.join(dir,"decoded_i2c.txt")
+outPath=os.path.join(dir,"processed.csv")
+in_data=pd.read_csv(path,sep=',')
+
+# Processing data
+vectConvert=np.vectorize(convertStr,otypes=[np.int32])
+data_np=vectConvert(in_data["Data"].to_numpy())
+print(data_np)
+
+# Saving result
+np.savetxt(outPath,data_np,fmt="%i",delimiter="\t")
+```
+
+Which gives us a consistent format where each line contains the decimal value of the byte to be sent over I2C:
+
+```
+0
+52
+48
+52
+48
+...
+```
+
+This is then sent to the Arduino with the following script: (see `arduino-i2c/utility.py`)
+
+```python
+class sender():
+    # For sending stuff to arduino
+    def __init__(self,serialPath="/dev/ttyACM0",csvPath="processed.csv"):
+        # Opens serial port and loads data from file
+        self.serObj=serial.Serial(serialPath,9600)
+        self.data=np.genfromtxt(os.path.join(os.getcwd(),csvPath),dtype=np.int32)
+        self.index=0
+        print(self.data)
+
+    def send_a_bunch(self,n):
+        # Sends n lines of data to Arduino
+        startIndex=self.index
+        for i in range(n):
+            toSend=self.data[startIndex+i]
+            toSend=(str(toSend)+"\n")
+            print(toSend)
+            self.serObj.write(toSend.encode())
+            self.index+=1
+            # Some delay is necessary to let the LCD respond
+            time.sleep(0.1)
+```
+
+#### Arduino to LCD 
+
+The Arduino then receives the data, and for each line it receives, sends the appropriate byte over I2C (see `arduino-i2c/iot-5.ino`) using Arduino's Wire library. Crucially, we have to first initialize the LCD display using the proper library (shown below). This is especially important because we want to use the display in 4-bit mode rather than the display's default 8-bit mode, and we don't know whether the decoded I2C contains the instructions to do so (and other instructions needed for proper initialization). In any case, there isn't any harm in initializing the display twice.
+
+```c
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27,16,2);
+
+void setup() {
+  // initializes lcd and opens serial port
+  Serial.begin(9600);
+  lcd.init(); // sends instructions to use 4-bit mode, among other things
+  lcd.backlight();
+  delay(500);
+  lcd.clear();
+}
+```
+
+#### The Result
+
+Putting everything together, we see a beautiful sight: hardware that actually works as intended, instead of short-circuiting everywhere and blowing up. The last screen displayed is shown below (the information on the other screens is shown in the next method):
+
+<img src="pictures/10.jpg" alt="10" style="zoom:12%;" />
 
 ## Reversing the entire protocol
 
@@ -440,6 +560,49 @@ int main (int argc, char **argv)
 ```
 
 Successfully entering these credentials downloads a zip file containing the flag.
+
+## The Fast Way
+
+We also found a faster way to get the flag, that doesn't require us to correct for the time drift by changing epochs. It might not be the intended solution, but it sure works. While playing with the code, we made an interesting observation: 
+
+***Several of the 6-digit tokens keep appearing over and over again, even when the timestamp changed by months.***
+
+How frequently? To find out, we generated every token within a ~1 month window, and tallied up the number of times each unique token appeared (see `token-generation/keygen-brute.cpp`). The assumption here is, of course, that the distribution of tokens in the real sequence is similar to the distribution in our generated sequence. If this assumption holds, rather than spending hours and hours *ahem* figuring out the problem and perfectly replicating the RSA token's behavior, we can just try the most frequently occurring 6-digit codes, perhaps using a script. 
+
+If we do brute-force the logins, however, we can be more efficient by only generating half the tokens. This is because the tokens are generated in pairs for every 120s window, and the login server provides some leeway if the (physical) token's clock is slightly out of sync with the server's. This means that:
+
+- The frequency of the 2nd token is strongly correlated with the frequency of the 1st
+- If the 2nd token in a pair is accepted, the 1st one will probably be accepted as well 
+
+Which means that we can probably get away with generating only the 1st token in each pair, and tallying their frequencies. The results are shown below (first column is 6-digit token, second is frequency):
+
+```
+Generating tokens between:
+Mon Nov  9 08:42:00 2020
+Thu Dec 10 18:02:17 2020
+Total tokens generated:		22601
+Number of unique tokens:	464
+835746	6082
+997494	1208
+578454	1142
+461177	1044
+233790	962
+...
+```
+
+Out of 22601 tokens generated in total, only 464 are unique, which means that an automated dictionary-attack that iterates over the 464 tokens wouldn't take very long. But it gets better (for us) - the top 5 most common tokens alone account for nearly half the tokens, which means trying those 5 already gives us a very good chance of getting in! 
+
+Just out of curiosity, I also plotted the CDF of the N most common keys:
+
+<img src="../../../../../../ctf/stack-2020/iot-challenge-5/pictures/distr-graph.png" alt="distr-graph" style="zoom:67%;" />
+
+From this graph, we can see that N=10 has a ~55% success rate, with diminishing returns thereafter: N=40 gives a ~80% rate, while N=100 increases it to ~90%. 
+
+At this point, we could still try an automated attack and iterate through all the tokens in our list, but why bother? Manually trying the top 5 keys already has a ~50% success rate (even "8935746" alone has a ~25% chance), and if those don't work, we can try again every 2 minutes anyways.
+
+<img src="../../../../../../ctf/stack-2020/iot-challenge-5/pictures/Screenshot from 2020-12-10 12-59-09.png" alt="Screenshot from 2020-12-10 12-59-09" style="zoom: 67%;" />
+
+## Conclusion
 
 This was an extremely entertaining challenge requiring understanding of various fields. Ended up being more like 90% reversing / 10% IOT-relevant stuff, but still learnt a lot and had great fun. 10/10 would solve again.
 
