@@ -594,13 +594,13 @@ Out of 22601 tokens generated in total, only 464 are unique, which means that an
 
 Just out of curiosity, I also plotted the CDF of the N most common keys:
 
-<img src="../../../../../../ctf/stack-2020/iot-challenge-5/pictures/distr-graph.png" alt="distr-graph" style="zoom:67%;" />
+<img src="/pictures/distr-graph.png" alt="distr-graph" style="zoom:67%;" />
 
 From this graph, we can see that N=10 has a ~55% success rate, with diminishing returns thereafter: N=40 gives a ~80% rate, while N=100 increases it to ~90%. 
 
 At this point, we could still try an automated attack and iterate through all the tokens in our list, but why bother? Manually trying the top 5 keys already has a ~50% success rate (even "8935746" alone has a ~25% chance), and if those don't work, we can try again every 2 minutes anyways.
 
-<img src="../../../../../../ctf/stack-2020/iot-challenge-5/pictures/Screenshot from 2020-12-10 12-59-09.png" alt="Screenshot from 2020-12-10 12-59-09" style="zoom: 67%;" />
+<img src="/pictures/Screenshot from 2020-12-10 12-59-09.png" alt="Screenshot from 2020-12-10 12-59-09" style="zoom: 67%;" />
 
 ## Conclusion
 
