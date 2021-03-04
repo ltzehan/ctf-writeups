@@ -33,7 +33,7 @@ with open("msg", 'wb') as ff:
 	ff.write(cert.extensions[1].value.value)
 ```
 
-The first extension corresponds to another certificate in DER format, and the second being the ciphertext. From the output, the exponent **e = 655367**, and the modulus **n** can be obtained in a friendlier format with:
+The first extension corresponds to another certificate in DER format, and the second being the ciphertext. From the output, the exponent **e = 65537**, and the modulus **n** can be obtained in a friendlier format with:
 
 ```bash
 openssl x509 -inform der -in sighhh.der -noout -modulus
